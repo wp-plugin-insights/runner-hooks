@@ -226,11 +226,32 @@ class JobProcessor
     ): array {
         $presentation = [];
 
-        // Top actions used
-        if (!empty($actionsUsed)) {
-            $topActionsRows = [];
-            foreach (array_slice($actionsUsed, 0, 10, true) as $hookName => $data) {
-                $topActionsRows[] = [
+        // Separate WordPress hooks from plugin-specific hooks
+        $wpActions = [];
+        $pluginActions = [];
+        foreach ($actionsUsed as $hookName => $data) {
+            if (isset($actionsProvided[$hookName])) {
+                $pluginActions[$hookName] = $data;
+            } else {
+                $wpActions[$hookName] = $data;
+            }
+        }
+
+        $wpFilters = [];
+        $pluginFilters = [];
+        foreach ($filtersUsed as $hookName => $data) {
+            if (isset($filtersProvided[$hookName])) {
+                $pluginFilters[$hookName] = $data;
+            } else {
+                $wpFilters[$hookName] = $data;
+            }
+        }
+
+        // WordPress actions used
+        if (!empty($wpActions)) {
+            $wpActionsRows = [];
+            foreach (array_slice($wpActions, 0, 10, true) as $hookName => $data) {
+                $wpActionsRows[] = [
                     'hook' => $hookName,
                     'count' => (string) $data['count'],
                     'locations' => $data['count'] === 1
@@ -239,22 +260,22 @@ class JobProcessor
                 ];
             }
 
-            $presentation['top_actions_used'] = $this->reportBuilder->createTable(
-                'Top Actions Used (WordPress hooks)',
+            $presentation['wordpress_actions_used'] = $this->reportBuilder->createTable(
+                'WordPress Actions Used',
                 [
                     ['key' => 'hook', 'label' => 'Hook Name'],
                     ['key' => 'count', 'label' => 'Usage Count'],
                     ['key' => 'locations', 'label' => 'Location'],
                 ],
-                $topActionsRows
+                $wpActionsRows
             );
         }
 
-        // Top filters used
-        if (!empty($filtersUsed)) {
-            $topFiltersRows = [];
-            foreach (array_slice($filtersUsed, 0, 10, true) as $hookName => $data) {
-                $topFiltersRows[] = [
+        // Plugin actions used
+        if (!empty($pluginActions)) {
+            $pluginActionsRows = [];
+            foreach (array_slice($pluginActions, 0, 10, true) as $hookName => $data) {
+                $pluginActionsRows[] = [
                     'hook' => $hookName,
                     'count' => (string) $data['count'],
                     'locations' => $data['count'] === 1
@@ -263,14 +284,62 @@ class JobProcessor
                 ];
             }
 
-            $presentation['top_filters_used'] = $this->reportBuilder->createTable(
-                'Top Filters Used (WordPress hooks)',
+            $presentation['plugin_actions_used'] = $this->reportBuilder->createTable(
+                'Plugin Actions Used',
                 [
                     ['key' => 'hook', 'label' => 'Hook Name'],
                     ['key' => 'count', 'label' => 'Usage Count'],
                     ['key' => 'locations', 'label' => 'Location'],
                 ],
-                $topFiltersRows
+                $pluginActionsRows
+            );
+        }
+
+        // WordPress filters used
+        if (!empty($wpFilters)) {
+            $wpFiltersRows = [];
+            foreach (array_slice($wpFilters, 0, 10, true) as $hookName => $data) {
+                $wpFiltersRows[] = [
+                    'hook' => $hookName,
+                    'count' => (string) $data['count'],
+                    'locations' => $data['count'] === 1
+                        ? $data['locations'][0]['file'] . ':' . $data['locations'][0]['line']
+                        : $data['count'] . ' locations',
+                ];
+            }
+
+            $presentation['wordpress_filters_used'] = $this->reportBuilder->createTable(
+                'WordPress Filters Used',
+                [
+                    ['key' => 'hook', 'label' => 'Hook Name'],
+                    ['key' => 'count', 'label' => 'Usage Count'],
+                    ['key' => 'locations', 'label' => 'Location'],
+                ],
+                $wpFiltersRows
+            );
+        }
+
+        // Plugin filters used
+        if (!empty($pluginFilters)) {
+            $pluginFiltersRows = [];
+            foreach (array_slice($pluginFilters, 0, 10, true) as $hookName => $data) {
+                $pluginFiltersRows[] = [
+                    'hook' => $hookName,
+                    'count' => (string) $data['count'],
+                    'locations' => $data['count'] === 1
+                        ? $data['locations'][0]['file'] . ':' . $data['locations'][0]['line']
+                        : $data['count'] . ' locations',
+                ];
+            }
+
+            $presentation['plugin_filters_used'] = $this->reportBuilder->createTable(
+                'Plugin Filters Used',
+                [
+                    ['key' => 'hook', 'label' => 'Hook Name'],
+                    ['key' => 'count', 'label' => 'Usage Count'],
+                    ['key' => 'locations', 'label' => 'Location'],
+                ],
+                $pluginFiltersRows
             );
         }
 
