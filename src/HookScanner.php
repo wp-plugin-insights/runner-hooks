@@ -118,15 +118,8 @@ class HookScanner
                     $priority = null;
 
                     if (in_array($function, ['add_action', 'add_filter'])) {
-                        // Try to extract callback
-                        if (preg_match('/' . preg_quote($function, '/') . '\s*\([^,]+,\s*([^,\)]+)/', $line, $callbackMatch)) {
-                            $callback = trim($callbackMatch[1], " \t\n\r\0\x0B'\"");
-                        }
-
-                        // Try to extract priority
-                        if (preg_match('/' . preg_quote($function, '/') . '\s*\([^,]+,[^,]+,\s*(\d+)/', $line, $priorityMatch)) {
-                            $priority = (int) $priorityMatch[1];
-                        }
+                        $callback = $this->extractCallback($line, $function);
+                        $priority = $this->extractPriority($line, $function);
                     }
 
                     $hooks[] = [
@@ -141,6 +134,161 @@ class HookScanner
         }
 
         return $hooks;
+    }
+
+    /**
+     * Extract callback from add_action/add_filter call.
+     *
+     * @param string $line
+     * @param string $function
+     * @return string|null
+     */
+    private function extractCallback(string $line, string $function): ?string
+    {
+        // Find the start of the function call
+        $functionPattern = '/' . preg_quote($function, '/') . '\s*\(/';
+        if (!preg_match($functionPattern, $line, $match, PREG_OFFSET_CAPTURE)) {
+            return null;
+        }
+
+        $startPos = $match[0][1] + strlen($match[0][0]);
+
+        // Skip the first parameter (hook name)
+        $pos = $this->skipParameter($line, $startPos);
+        if ($pos === null) {
+            return null;
+        }
+
+        // Extract the callback parameter
+        $callbackStart = $pos;
+        $callbackEnd = $this->findParameterEnd($line, $callbackStart);
+        if ($callbackEnd === null) {
+            return null;
+        }
+
+        $callback = trim(substr($line, $callbackStart, $callbackEnd - $callbackStart));
+
+        // Parse the callback
+        return $this->parseCallback($callback);
+    }
+
+    /**
+     * Skip to the next parameter.
+     *
+     * @param string $line
+     * @param int $start
+     * @return int|null
+     */
+    private function skipParameter(string $line, int $start): ?int
+    {
+        $pos = $this->findParameterEnd($line, $start);
+        if ($pos === null) {
+            return null;
+        }
+
+        // Skip comma and whitespace
+        while ($pos < strlen($line) && ($line[$pos] === ',' || ctype_space($line[$pos]))) {
+            $pos++;
+        }
+
+        return $pos;
+    }
+
+    /**
+     * Find the end of a parameter (handles nested structures).
+     *
+     * @param string $line
+     * @param int $start
+     * @return int|null
+     */
+    private function findParameterEnd(string $line, int $start): ?int
+    {
+        $depth = 0;
+        $inString = false;
+        $stringChar = null;
+        $length = strlen($line);
+
+        for ($i = $start; $i < $length; $i++) {
+            $char = $line[$i];
+
+            // Handle strings
+            if (($char === '"' || $char === "'") && ($i === 0 || $line[$i - 1] !== '\\')) {
+                if (!$inString) {
+                    $inString = true;
+                    $stringChar = $char;
+                } elseif ($char === $stringChar) {
+                    $inString = false;
+                    $stringChar = null;
+                }
+                continue;
+            }
+
+            if ($inString) {
+                continue;
+            }
+
+            // Handle brackets and parentheses
+            if ($char === '(' || $char === '[') {
+                $depth++;
+            } elseif ($char === ')' || $char === ']') {
+                if ($depth === 0) {
+                    return $i; // End of parameters
+                }
+                $depth--;
+            } elseif ($char === ',' && $depth === 0) {
+                return $i; // End of this parameter
+            }
+        }
+
+        return $length;
+    }
+
+    /**
+     * Parse callback into a readable format.
+     *
+     * @param string $callback
+     * @return string
+     */
+    private function parseCallback(string $callback): string
+    {
+        // Handle arrays: array($this, 'method') or [$this, 'method']
+        if (preg_match('/^(array\s*\(|\[)\s*\$(\w+)\s*,\s*[\'"](\w+)[\'"]\s*(\)|\])$/', $callback, $match)) {
+            return '$' . $match[2] . '::' . $match[3];
+        }
+
+        // Handle closures/anonymous functions
+        if (preg_match('/^(function|fn)\s*\(/', $callback)) {
+            return preg_match('/^fn\s*\(/', $callback) ? 'fn(...)' : 'function(...)';
+        }
+
+        // Handle string callbacks
+        $callback = trim($callback, " \t\n\r\0\x0B'\"");
+
+        // Limit length for readability
+        if (strlen($callback) > 50) {
+            return substr($callback, 0, 47) . '...';
+        }
+
+        return $callback;
+    }
+
+    /**
+     * Extract priority from add_action/add_filter call.
+     *
+     * @param string $line
+     * @param string $function
+     * @return int|null
+     */
+    private function extractPriority(string $line, string $function): ?int
+    {
+        // Priority is the 3rd parameter
+        $pattern = '/' . preg_quote($function, '/') . '\s*\([^,]+,[^,]+,\s*(\d+)/';
+
+        if (preg_match($pattern, $line, $matches)) {
+            return (int) $matches[1];
+        }
+
+        return null;
     }
 
     /**
