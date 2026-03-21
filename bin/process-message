@@ -1,0 +1,35 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use WpPluginInsights\RunnerHooks\Config;
+use WpPluginInsights\RunnerHooks\JobProcessor;
+
+$autoload = __DIR__ . '/../vendor/autoload.php';
+
+if (!is_file($autoload)) {
+    fwrite(STDERR, "Missing Composer autoload file. Run: composer install\n");
+    exit(1);
+}
+
+require $autoload;
+
+$input = stream_get_contents(STDIN);
+
+if ($input === false || trim($input) === '') {
+    fwrite(STDERR, "Expected a JSON message on stdin.\n");
+    exit(1);
+}
+
+try {
+    $config = Config::fromEnvironment();
+    $processor = new JobProcessor($config);
+    $result = $processor->process($input);
+
+    fwrite(STDOUT, json_encode($result, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR) . PHP_EOL);
+    exit(0);
+} catch (Throwable $exception) {
+    fwrite(STDERR, $exception->getMessage() . PHP_EOL);
+    exit(1);
+}
