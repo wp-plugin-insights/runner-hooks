@@ -424,7 +424,22 @@ class HookScanner
     }
 
     /**
-     * Filter hooks to only include plugin-specific ones.
+     * Known WordPress core hook prefixes to exclude from plugin-specific detection.
+     */
+    private const WP_CORE_PREFIXES = [
+        'wp_', 'admin_', 'plugins_', 'pre_', 'post_', 'attachment_', 'comment_',
+        'user_', 'term_', 'taxonomy_', 'category_', 'tag_', 'link_', 'blog_',
+        'site_', 'network_', 'page_', 'template_', 'theme_', 'stylesheet_',
+        'widgets_', 'widget_', 'nav_menu_', 'menu_', 'option_', 'meta_',
+        'get_', 'set_', 'update_', 'delete_', 'edit_', 'save_', 'load_',
+        'init', 'after_', 'before_', 'the_', 'registered_', 'unregistered_',
+        'activated_', 'deactivated_', 'switch_', 'login_', 'logout_',
+        'rest_', 'xmlrpc_', 'embed_', 'customize_', 'added_', 'removed_',
+        'retrieve_', 'sanitize_', 'esc_', 'wpmu_', 'ms_', 'bp_',
+    ];
+
+    /**
+     * Filter hooks to only include plugin-specific ones using hybrid detection.
      *
      * @param array<array{hook: string, file: string, line: int, callback: string|null, priority: int|null, documentation: array|null}> $hooks
      * @param string $pluginSlug
@@ -432,32 +447,141 @@ class HookScanner
      */
     private function filterPluginSpecificHooks(array $hooks, string $pluginSlug): array
     {
-        $pluginPrefix = str_replace('-', '_', $pluginSlug);
+        // Generate prefix variations from plugin slug
+        $prefixVariations = $this->generatePrefixVariations($pluginSlug);
 
-        // Also check for short prefix (first word of plugin slug)
-        // e.g., "tabify-edit-screen" -> check both "tabify_edit_screen" and "tabify_"
-        $shortPrefix = '';
-        if (strpos($pluginPrefix, '_') !== false) {
-            $parts = explode('_', $pluginPrefix);
-            $shortPrefix = $parts[0] . '_';
+        // Try matching with prefix variations first
+        $filtered = [];
+        foreach ($hooks as $hook) {
+            $hookName = $hook['hook'];
+
+            foreach ($prefixVariations as $prefix) {
+                if (str_contains($hookName, $prefix) || str_starts_with($hookName, $prefix)) {
+                    $filtered[] = $hook;
+                    break;
+                }
+            }
         }
 
-        $filtered = [];
+        // If we found matches, use them
+        if (!empty($filtered)) {
+            return $filtered;
+        }
+
+        // Fall back to statistical analysis
+        $detectedPrefixes = $this->detectCommonPrefixes($hooks);
 
         foreach ($hooks as $hook) {
             $hookName = $hook['hook'];
 
-            // Check if hook name contains the full plugin prefix
-            if (strpos($hookName, $pluginPrefix) !== false) {
-                $filtered[] = $hook;
-            }
-            // Or if it starts with the short prefix (e.g., "tabify_")
-            elseif ($shortPrefix !== '' && strpos($hookName, $shortPrefix) === 0) {
-                $filtered[] = $hook;
+            foreach ($detectedPrefixes as $prefix) {
+                if (str_starts_with($hookName, $prefix)) {
+                    $filtered[] = $hook;
+                    break;
+                }
             }
         }
 
         return $filtered;
+    }
+
+    /**
+     * Generate prefix variations from plugin slug.
+     *
+     * @param string $pluginSlug
+     * @return array<string>
+     */
+    private function generatePrefixVariations(string $pluginSlug): array
+    {
+        $variations = [];
+        $underscored = str_replace('-', '_', $pluginSlug);
+
+        // Exact match
+        $variations[] = $underscored;
+
+        // Split into parts
+        $parts = explode('_', $underscored);
+
+        // Short prefix (first word)
+        if (count($parts) > 1) {
+            $variations[] = $parts[0] . '_';
+        }
+
+        // Generate acronym from words (e.g., "contact-form-7" → "cf7", "wpcf7")
+        $acronym = '';
+        foreach ($parts as $part) {
+            if (is_numeric($part)) {
+                $acronym .= $part;
+            } else {
+                $acronym .= $part[0] ?? '';
+            }
+        }
+
+        if ($acronym !== '' && $acronym !== $underscored) {
+            $variations[] = $acronym;
+            $variations[] = $acronym . '_';
+            $variations[] = 'wp' . $acronym;
+            $variations[] = 'wp_' . $acronym;
+        }
+
+        return array_unique(array_filter($variations));
+    }
+
+    /**
+     * Detect common prefixes statistically from hook names.
+     *
+     * @param array<array{hook: string, file: string, line: int, callback: string|null, priority: int|null, documentation: array|null}> $hooks
+     * @return array<string>
+     */
+    private function detectCommonPrefixes(array $hooks): array
+    {
+        $prefixCounts = [];
+
+        foreach ($hooks as $hook) {
+            $hookName = $hook['hook'];
+
+            // Extract potential prefix (up to first underscore or full word)
+            if (preg_match('/^([a-z0-9]+_)/', $hookName, $matches)) {
+                $prefix = $matches[1];
+
+                // Skip WordPress core prefixes
+                if (!$this->isWordPressCorePrefix($prefix)) {
+                    $prefixCounts[$prefix] = ($prefixCounts[$prefix] ?? 0) + 1;
+                }
+            }
+        }
+
+        // Filter to prefixes that appear at least 3 times
+        $commonPrefixes = [];
+        foreach ($prefixCounts as $prefix => $count) {
+            if ($count >= 3) {
+                $commonPrefixes[] = $prefix;
+            }
+        }
+
+        // Sort by frequency (most common first)
+        usort($commonPrefixes, function($a, $b) use ($prefixCounts) {
+            return $prefixCounts[$b] <=> $prefixCounts[$a];
+        });
+
+        return $commonPrefixes;
+    }
+
+    /**
+     * Check if a prefix is a known WordPress core prefix.
+     *
+     * @param string $prefix
+     * @return bool
+     */
+    private function isWordPressCorePrefix(string $prefix): bool
+    {
+        foreach (self::WP_CORE_PREFIXES as $corePrefix) {
+            if (str_starts_with($prefix, $corePrefix)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

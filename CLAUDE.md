@@ -58,7 +58,16 @@ The scanner differentiates between:
 - **Actions Provided**: Plugin calls to `do_action()` (extensibility points for other developers)
 - **Filters Provided**: Plugin calls to `apply_filters()` (extensibility points for other developers)
 
-Plugin-specific hooks are identified by matching the plugin slug (with underscores) in the hook name.
+Plugin-specific hooks are identified using a hybrid detection approach:
+
+1. **Prefix variations**: Generates variations from the plugin slug
+   - Exact match: "contact-form-7" → "contact_form_7"
+   - First word: "contact-form-7" → "contact_"
+   - Acronyms: "contact-form-7" → "cf7", "cf7_", "wpcf7", "wp_cf7"
+
+2. **Statistical analysis**: If no matches found, detects common prefixes that appear 3+ times and aren't WordPress core prefixes
+
+3. **WordPress core filtering**: Excludes known WP prefixes (wp_, admin_, post_, etc.)
 
 ### Hook Documentation Extraction
 
