@@ -77,21 +77,23 @@ Documentation quality is graded as:
 - **None**: No documentation
 
 Undocumented hooks generate issues:
-- **Medium severity**: No hooks documented when hooks are provided
-- **Low severity**: Less than 50% documented
-- **Trivial severity**: 50-80% documented, or documented but missing @since/@param tags
+- **High severity**: No hooks documented when hooks are provided
+- **Medium severity**: Less than 50% documented
+- **Low severity**: 50-80% documented
+- **Trivial severity**: Documented but missing @since/@param tags
 
 ### Scoring System
 
-Scoring is based on **WordPress integration** (how many hooks the plugin uses):
+Scoring is based on **documentation quality** for plugins that provide extensibility hooks:
 
-- 100%: 20+ hooks used
-- 85%: 10-19 hooks used
-- 70%: 5-9 hooks used
-- 50%: 1-4 hooks used
-- 30%: No hooks used
+- **N/A**: Plugin doesn't provide extensibility hooks (no score)
+- **A (95%)**: Excellent - 80%+ documented, 50%+ with complete @since and @param tags
+- **B (85%)**: Good - 60%+ documented, 30%+ well-documented
+- **C (65%)**: Fair - 40%+ documented
+- **D (45%)**: Poor - Less than 40% documented
+- **F (30%)**: None - No hooks documented
 
-The reasoning includes notes about extensibility if the plugin provides its own hooks.
+**Rationale**: Hook usage is context-dependent (simple plugins don't need many hooks), but if you provide hooks for other developers, you should document them.
 
 ## Configuration
 

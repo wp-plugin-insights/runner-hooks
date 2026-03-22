@@ -65,11 +65,11 @@ class JobProcessor
         $actionsProvidedGrouped = $this->hookScanner->groupHooksByName($hookData['actions_provided']);
         $filtersProvidedGrouped = $this->hookScanner->groupHooksByName($hookData['filters_provided']);
 
-        // Calculate score based on hook usage
-        $score = $this->calculateScore($hookData);
-
         // Calculate documentation metrics
         $docMetrics = $this->calculateDocumentationMetrics($actionsProvidedGrouped, $filtersProvidedGrouped);
+
+        // Calculate score based on documentation quality
+        $score = $this->calculateScore($hookData, $docMetrics);
 
         // Build issues
         $issues = $this->buildIssues($hookData, $job, $docMetrics);
@@ -126,38 +126,68 @@ class JobProcessor
 
     /**
      * @param array<string, mixed> $hookData
+     * @param array<string, mixed> $docMetrics
      * @return array{grade: string, percentage: float, reasoning: string}
      */
-    private function calculateScore(array $hookData): array
+    private function calculateScore(array $hookData, array $docMetrics): array
     {
         $totalHooksProvided = $hookData['total_actions_provided'] + $hookData['total_filters_provided'];
-        $totalHooksUsed = $hookData['total_actions_used'] + $hookData['total_filters_used'];
 
-        // Score based on WordPress integration (how well plugin uses hooks)
-        // Not judging extensibility - some plugins don't need to provide hooks
+        // If plugin doesn't provide hooks, no score (not applicable)
+        if ($totalHooksProvided === 0) {
+            return [
+                'grade' => 'N/A',
+                'percentage' => 0.0,
+                'reasoning' => 'Plugin does not provide extensibility hooks',
+            ];
+        }
+
+        // Score based on documentation quality of provided hooks
+        $documentedPercentage = $docMetrics['documented_percentage'];
+        $wellDocumentedCount = $docMetrics['well_documented_count'];
+        $documentedCount = $docMetrics['documented_count'];
+        $quality = $docMetrics['quality'];
+
         $percentage = 0.0;
         $reasoning = '';
 
-        if ($totalHooksUsed >= 20) {
-            $percentage = 100.0;
-            $reasoning = 'Plugin integrates extensively with WordPress (' . $totalHooksUsed . ' hooks used)';
-        } elseif ($totalHooksUsed >= 10) {
+        // Grade based on documentation coverage and quality
+        if ($quality === 'excellent') {
+            $percentage = 95.0;
+            $reasoning = sprintf(
+                'Excellent hook documentation: %d of %d hooks documented (%.0f%%), with comprehensive @since and @param tags',
+                $documentedCount,
+                $totalHooksProvided,
+                $documentedPercentage
+            );
+        } elseif ($quality === 'good') {
             $percentage = 85.0;
-            $reasoning = 'Plugin integrates well with WordPress (' . $totalHooksUsed . ' hooks used)';
-        } elseif ($totalHooksUsed >= 5) {
-            $percentage = 70.0;
-            $reasoning = 'Plugin uses WordPress hooks (' . $totalHooksUsed . ' hooks used)';
-        } elseif ($totalHooksUsed >= 1) {
-            $percentage = 50.0;
-            $reasoning = 'Plugin has minimal WordPress integration (' . $totalHooksUsed . ' hooks used)';
+            $reasoning = sprintf(
+                'Good hook documentation: %d of %d hooks documented (%.0f%%)',
+                $documentedCount,
+                $totalHooksProvided,
+                $documentedPercentage
+            );
+        } elseif ($quality === 'fair') {
+            $percentage = 65.0;
+            $reasoning = sprintf(
+                'Fair hook documentation: %d of %d hooks documented (%.0f%%), but many lack complete details',
+                $documentedCount,
+                $totalHooksProvided,
+                $documentedPercentage
+            );
+        } elseif ($quality === 'poor') {
+            $percentage = 45.0;
+            $reasoning = sprintf(
+                'Poor hook documentation: Only %d of %d hooks documented (%.0f%%)',
+                $documentedCount,
+                $totalHooksProvided,
+                $documentedPercentage
+            );
         } else {
             $percentage = 30.0;
-            $reasoning = 'Plugin does not use WordPress hooks';
-        }
-
-        // Add note about extensibility if hooks are provided
-        if ($totalHooksProvided > 0) {
-            $reasoning .= sprintf('. Provides %d plugin-specific hook%s for extensibility',
+            $reasoning = sprintf(
+                'No hook documentation: Plugin provides %d extensibility hook%s but none are documented',
                 $totalHooksProvided,
                 $totalHooksProvided === 1 ? '' : 's'
             );
@@ -192,24 +222,8 @@ class JobProcessor
         $issuesTrivial = 0;
         $topIssues = [];
 
-        // Only report if plugin uses very few WordPress hooks (integration issue)
-        $totalHooksUsed = $hookData['total_actions_used'] + $hookData['total_filters_used'];
-
-        if ($totalHooksUsed === 0) {
-            $issuesLow++;
-            $topIssues[] = [
-                'code' => 'hooks.no_wp_integration',
-                'message' => 'Plugin does not use any WordPress hooks',
-                'severity' => 'low',
-            ];
-        } elseif ($totalHooksUsed < 3) {
-            $issuesTrivial++;
-            $topIssues[] = [
-                'code' => 'hooks.minimal_wp_integration',
-                'message' => sprintf('Plugin uses only %d WordPress hook%s', $totalHooksUsed, $totalHooksUsed === 1 ? '' : 's'),
-                'severity' => 'trivial',
-            ];
-        }
+        // Note: We don't report on hook usage as it's context-dependent
+        // A simple utility plugin doesn't need many hooks
 
         // Documentation issues
         $totalHooksProvided = $hookData['total_actions_provided'] + $hookData['total_filters_provided'];
@@ -219,17 +233,17 @@ class JobProcessor
             $undocumentedCount = $totalHooksProvided - $documentedCount;
 
             if ($documentedPercentage === 0.0) {
-                $issuesMedium++;
+                $issuesHigh++;
                 $topIssues[] = [
                     'code' => 'hooks.no_documentation',
-                    'message' => sprintf('Plugin provides %d hook%s but none are documented',
+                    'message' => sprintf('Plugin provides %d extensibility hook%s but none are documented',
                         $totalHooksProvided,
                         $totalHooksProvided === 1 ? '' : 's'
                     ),
-                    'severity' => 'medium',
+                    'severity' => 'high',
                 ];
             } elseif ($documentedPercentage < 50.0) {
-                $issuesLow++;
+                $issuesMedium++;
                 $topIssues[] = [
                     'code' => 'hooks.poor_documentation',
                     'message' => sprintf('Only %d of %d provided hooks (%.0f%%) are documented',
@@ -237,17 +251,17 @@ class JobProcessor
                         $totalHooksProvided,
                         $documentedPercentage
                     ),
-                    'severity' => 'low',
+                    'severity' => 'medium',
                 ];
             } elseif ($documentedPercentage < 80.0) {
-                $issuesTrivial++;
+                $issuesLow++;
                 $topIssues[] = [
                     'code' => 'hooks.incomplete_documentation',
                     'message' => sprintf('%d of %d provided hooks lack documentation',
                         $undocumentedCount,
                         $totalHooksProvided
                     ),
-                    'severity' => 'trivial',
+                    'severity' => 'low',
                 ];
             }
 
