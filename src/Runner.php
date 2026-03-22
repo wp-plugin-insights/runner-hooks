@@ -60,7 +60,5 @@ class Runner
             fwrite(STDERR, sprintf("[runner] runtime failure: %s\n", $exception->getMessage()));
             $message->nack(false, true);
         }
-
-        sleep(10); // Sleep for 10 seconds to avoid overwhelming the system with too many messages at once
     }
 }
