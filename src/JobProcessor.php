@@ -68,8 +68,11 @@ class JobProcessor
         // Calculate score based on hook usage
         $score = $this->calculateScore($hookData);
 
+        // Calculate documentation metrics
+        $docMetrics = $this->calculateDocumentationMetrics($actionsProvidedGrouped, $filtersProvidedGrouped);
+
         // Build issues
-        $issues = $this->buildIssues($hookData, $job);
+        $issues = $this->buildIssues($hookData, $job, $docMetrics);
 
         // Build presentation data
         $presentation = $this->buildPresentation(
@@ -91,6 +94,9 @@ class JobProcessor
             'unique_filters_used' => count($filtersUsedGrouped),
             'unique_actions_provided' => count($actionsProvidedGrouped),
             'unique_filters_provided' => count($filtersProvidedGrouped),
+            'documented_hooks_count' => $docMetrics['documented_count'],
+            'documented_hooks_percentage' => $docMetrics['documented_percentage'],
+            'well_documented_hooks_count' => $docMetrics['well_documented_count'],
         ];
 
         // Build capabilities
@@ -99,6 +105,8 @@ class JobProcessor
             'extensible' => $hookData['total_actions_provided'] + $hookData['total_filters_provided'] >= 5,
             'actions_provided' => array_keys($actionsProvidedGrouped),
             'filters_provided' => array_keys($filtersProvidedGrouped),
+            'documented_hooks' => $docMetrics['has_documentation'],
+            'documentation_quality' => $docMetrics['quality'],
         ];
 
         return $this->reportBuilder->build(
@@ -173,9 +181,10 @@ class JobProcessor
 
     /**
      * @param array<string, mixed> $hookData
+     * @param array<string, mixed> $docMetrics
      * @return array<string, mixed>
      */
-    private function buildIssues(array $hookData, Job $job): array
+    private function buildIssues(array $hookData, Job $job, array $docMetrics): array
     {
         $issuesHigh = 0;
         $issuesMedium = 0;
@@ -202,12 +211,125 @@ class JobProcessor
             ];
         }
 
+        // Documentation issues
+        $totalHooksProvided = $hookData['total_actions_provided'] + $hookData['total_filters_provided'];
+        if ($totalHooksProvided > 0) {
+            $documentedPercentage = $docMetrics['documented_percentage'];
+            $documentedCount = $docMetrics['documented_count'];
+            $undocumentedCount = $totalHooksProvided - $documentedCount;
+
+            if ($documentedPercentage === 0.0) {
+                $issuesMedium++;
+                $topIssues[] = [
+                    'code' => 'hooks.no_documentation',
+                    'message' => sprintf('Plugin provides %d hook%s but none are documented',
+                        $totalHooksProvided,
+                        $totalHooksProvided === 1 ? '' : 's'
+                    ),
+                    'severity' => 'medium',
+                ];
+            } elseif ($documentedPercentage < 50.0) {
+                $issuesLow++;
+                $topIssues[] = [
+                    'code' => 'hooks.poor_documentation',
+                    'message' => sprintf('Only %d of %d provided hooks (%.0f%%) are documented',
+                        $documentedCount,
+                        $totalHooksProvided,
+                        $documentedPercentage
+                    ),
+                    'severity' => 'low',
+                ];
+            } elseif ($documentedPercentage < 80.0) {
+                $issuesTrivial++;
+                $topIssues[] = [
+                    'code' => 'hooks.incomplete_documentation',
+                    'message' => sprintf('%d of %d provided hooks lack documentation',
+                        $undocumentedCount,
+                        $totalHooksProvided
+                    ),
+                    'severity' => 'trivial',
+                ];
+            }
+
+            // Check for missing important documentation elements
+            $wellDocumentedCount = $docMetrics['well_documented_count'];
+            if ($documentedCount > 0 && $wellDocumentedCount < ($documentedCount * 0.5)) {
+                $issuesTrivial++;
+                $topIssues[] = [
+                    'code' => 'hooks.low_quality_documentation',
+                    'message' => 'Many documented hooks are missing @since or @param tags',
+                    'severity' => 'trivial',
+                ];
+            }
+        }
+
         return [
             'high' => $issuesHigh,
             'medium' => $issuesMedium,
             'low' => $issuesLow,
             'trivial' => $issuesTrivial,
             'top' => $topIssues,
+        ];
+    }
+
+    /**
+     * Calculate documentation metrics for provided hooks.
+     *
+     * @param array<string, array{count: int, locations: array, documentation: array|null}> $actionsProvided
+     * @param array<string, array{count: int, locations: array, documentation: array|null}> $filtersProvided
+     * @return array{documented_count: int, documented_percentage: float, well_documented_count: int, has_documentation: bool, quality: string}
+     */
+    private function calculateDocumentationMetrics(array $actionsProvided, array $filtersProvided): array
+    {
+        $allProvidedHooks = array_merge($actionsProvided, $filtersProvided);
+        $totalHooks = count($allProvidedHooks);
+
+        if ($totalHooks === 0) {
+            return [
+                'documented_count' => 0,
+                'documented_percentage' => 0.0,
+                'well_documented_count' => 0,
+                'has_documentation' => false,
+                'quality' => 'none',
+            ];
+        }
+
+        $documentedCount = 0;
+        $wellDocumentedCount = 0;
+
+        foreach ($allProvidedHooks as $hook) {
+            $doc = $hook['documentation'];
+
+            if ($doc !== null && $doc['description'] !== '') {
+                $documentedCount++;
+
+                // Well-documented: has description, @since, and at least one @param
+                if ($doc['since'] !== null && !empty($doc['params'])) {
+                    $wellDocumentedCount++;
+                }
+            }
+        }
+
+        $documentedPercentage = ($documentedCount / $totalHooks) * 100;
+
+        // Determine quality level
+        $quality = 'none';
+        if ($documentedPercentage >= 80 && $wellDocumentedCount >= ($totalHooks * 0.5)) {
+            $quality = 'excellent';
+        } elseif ($documentedPercentage >= 60 && $wellDocumentedCount >= ($totalHooks * 0.3)) {
+            $quality = 'good';
+        } elseif ($documentedPercentage >= 40) {
+            $quality = 'fair';
+        } elseif ($documentedPercentage > 0) {
+            $quality = 'poor';
+        }
+
+        return [
+            'documented_count' => $documentedCount,
+            'documented_percentage' => round($documentedPercentage, 1),
+            'well_documented_count' => $wellDocumentedCount,
+            'has_documentation' => $documentedCount > 0,
+            'quality' => $quality,
         ];
     }
 
@@ -347,19 +469,32 @@ class JobProcessor
         if (!empty($actionsProvided)) {
             $actionsProvidedRows = [];
             foreach ($actionsProvided as $hookName => $data) {
-                $actionsProvidedRows[] = [
+                $row = [
                     'hook' => $hookName,
                     'count' => (string) $data['count'],
                     'locations' => $data['count'] === 1
                         ? $data['locations'][0]['file'] . ':' . $data['locations'][0]['line']
                         : $data['count'] . ' locations',
                 ];
+
+                // Add documentation description
+                if ($data['documentation'] !== null && $data['documentation']['description'] !== '') {
+                    $doc = $data['documentation'];
+                    $row['description'] = mb_strlen($doc['description']) > 80
+                        ? mb_substr($doc['description'], 0, 77) . '...'
+                        : $doc['description'];
+                } else {
+                    $row['description'] = '';
+                }
+
+                $actionsProvidedRows[] = $row;
             }
 
             $presentation['actions_provided'] = $this->reportBuilder->createTable(
                 'Actions Provided (Plugin-specific hooks)',
                 [
                     ['key' => 'hook', 'label' => 'Hook Name'],
+                    ['key' => 'description', 'label' => 'Description'],
                     ['key' => 'count', 'label' => 'Occurrences'],
                     ['key' => 'locations', 'label' => 'Location'],
                 ],
@@ -371,19 +506,32 @@ class JobProcessor
         if (!empty($filtersProvided)) {
             $filtersProvidedRows = [];
             foreach ($filtersProvided as $hookName => $data) {
-                $filtersProvidedRows[] = [
+                $row = [
                     'hook' => $hookName,
                     'count' => (string) $data['count'],
                     'locations' => $data['count'] === 1
                         ? $data['locations'][0]['file'] . ':' . $data['locations'][0]['line']
                         : $data['count'] . ' locations',
                 ];
+
+                // Add documentation description
+                if ($data['documentation'] !== null && $data['documentation']['description'] !== '') {
+                    $doc = $data['documentation'];
+                    $row['description'] = mb_strlen($doc['description']) > 80
+                        ? mb_substr($doc['description'], 0, 77) . '...'
+                        : $doc['description'];
+                } else {
+                    $row['description'] = '';
+                }
+
+                $filtersProvidedRows[] = $row;
             }
 
             $presentation['filters_provided'] = $this->reportBuilder->createTable(
                 'Filters Provided (Plugin-specific hooks)',
                 [
                     ['key' => 'hook', 'label' => 'Hook Name'],
+                    ['key' => 'description', 'label' => 'Description'],
                     ['key' => 'count', 'label' => 'Occurrences'],
                     ['key' => 'locations', 'label' => 'Location'],
                 ],

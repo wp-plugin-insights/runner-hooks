@@ -92,7 +92,7 @@ class HookScanner
      * @param string $content
      * @param string $file
      * @param string $function
-     * @return array<array{hook: string, file: string, line: int, callback: string|null, priority: int|null}>
+     * @return array<array{hook: string, file: string, line: int, callback: string|null, priority: int|null, documentation: array|null}>
      */
     private function findHookCalls(string $content, string $file, string $function): array
     {
@@ -122,12 +122,19 @@ class HookScanner
                         $priority = $this->extractPriority($line, $function);
                     }
 
+                    // Extract documentation for do_action/apply_filters (provided hooks)
+                    $documentation = null;
+                    if (in_array($function, ['do_action', 'apply_filters'])) {
+                        $documentation = $this->extractDocumentation($lines, $lineNumber);
+                    }
+
                     $hooks[] = [
                         'hook' => $hookName,
                         'file' => $file,
                         'line' => $lineNumber + 1,
                         'callback' => $callback,
                         'priority' => $priority,
+                        'documentation' => $documentation,
                     ];
                 }
             }
@@ -292,11 +299,136 @@ class HookScanner
     }
 
     /**
+     * Extract documentation from DocBlock comment above a hook.
+     *
+     * @param array<string> $lines
+     * @param int $lineNumber
+     * @return array{description: string, since: string|null, params: array<array{type: string|null, name: string, description: string}>, has_example: bool}|null
+     */
+    private function extractDocumentation(array $lines, int $lineNumber): ?array
+    {
+        $docBlockLines = [];
+        $currentLine = $lineNumber - 1;
+
+        // Look backwards for DocBlock
+        while ($currentLine >= 0) {
+            $line = trim($lines[$currentLine]);
+
+            // Found end of DocBlock
+            if ($line === '*/') {
+                $docBlockLines[] = $line;
+                $currentLine--;
+                continue;
+            }
+
+            // Inside DocBlock
+            if (str_starts_with($line, '*') || str_starts_with($line, '/**')) {
+                $docBlockLines[] = $line;
+
+                // Found start of DocBlock
+                if (str_starts_with($line, '/**')) {
+                    break;
+                }
+
+                $currentLine--;
+                continue;
+            }
+
+            // Empty line or whitespace is OK
+            if ($line === '') {
+                $currentLine--;
+                continue;
+            }
+
+            // Non-DocBlock content, stop searching
+            break;
+        }
+
+        // No DocBlock found
+        if (empty($docBlockLines) || !str_starts_with($docBlockLines[count($docBlockLines) - 1], '/**')) {
+            return null;
+        }
+
+        // Reverse to get correct order
+        $docBlockLines = array_reverse($docBlockLines);
+
+        return $this->parseDocBlock($docBlockLines);
+    }
+
+    /**
+     * Parse a DocBlock into structured documentation.
+     *
+     * @param array<string> $docBlockLines
+     * @return array{description: string, since: string|null, params: array<array{type: string|null, name: string, description: string}>, has_example: bool}
+     */
+    private function parseDocBlock(array $docBlockLines): array
+    {
+        $description = [];
+        $since = null;
+        $params = [];
+        $hasExample = false;
+        $inDescription = true;
+
+        foreach ($docBlockLines as $line) {
+            // Remove /** and */ and leading *
+            $line = trim($line);
+            $line = preg_replace('/^\/\*\*|\*\/$/', '', $line);
+            $line = preg_replace('/^\* ?/', '', $line);
+
+            // Empty line
+            if ($line === '') {
+                continue;
+            }
+
+            // @since tag
+            if (preg_match('/^@since\s+(.+)$/', $line, $matches)) {
+                $since = trim($matches[1]);
+                $inDescription = false;
+                continue;
+            }
+
+            // @param tag
+            if (preg_match('/^@param\s+(\S+)\s+(\$\w+)(?:\s+(.+))?$/', $line, $matches)) {
+                $params[] = [
+                    'type' => $matches[1] !== '' ? $matches[1] : null,
+                    'name' => $matches[2],
+                    'description' => isset($matches[3]) ? trim($matches[3]) : '',
+                ];
+                $inDescription = false;
+                continue;
+            }
+
+            // Check for example code
+            if (str_contains(strtolower($line), 'example') || str_contains($line, '<?php')) {
+                $hasExample = true;
+            }
+
+            // Other @ tags (like @return, @see, etc.) - stop description
+            if (str_starts_with($line, '@')) {
+                $inDescription = false;
+                continue;
+            }
+
+            // Add to description if still in description section
+            if ($inDescription) {
+                $description[] = $line;
+            }
+        }
+
+        return [
+            'description' => trim(implode(' ', $description)),
+            'since' => $since,
+            'params' => $params,
+            'has_example' => $hasExample,
+        ];
+    }
+
+    /**
      * Filter hooks to only include plugin-specific ones.
      *
-     * @param array<array{hook: string, file: string, line: int, callback: string|null, priority: int|null}> $hooks
+     * @param array<array{hook: string, file: string, line: int, callback: string|null, priority: int|null, documentation: array|null}> $hooks
      * @param string $pluginSlug
-     * @return array<array{hook: string, file: string, line: int, callback: string|null, priority: int|null}>
+     * @return array<array{hook: string, file: string, line: int, callback: string|null, priority: int|null, documentation: array|null}>
      */
     private function filterPluginSpecificHooks(array $hooks, string $pluginSlug): array
     {
@@ -331,8 +463,8 @@ class HookScanner
     /**
      * Group hooks by name with their locations.
      *
-     * @param array<array{hook: string, file: string, line: int, callback: string|null, priority: int|null}> $hooks
-     * @return array<string, array{count: int, locations: array<array{file: string, line: int, callback: string|null, priority: int|null}>}>
+     * @param array<array{hook: string, file: string, line: int, callback: string|null, priority: int|null, documentation: array|null}> $hooks
+     * @return array<string, array{count: int, locations: array<array{file: string, line: int, callback: string|null, priority: int|null, documentation: array|null}>, documentation: array|null}>
      */
     public function groupHooksByName(array $hooks): array
     {
@@ -345,6 +477,7 @@ class HookScanner
                 $grouped[$hookName] = [
                     'count' => 0,
                     'locations' => [],
+                    'documentation' => null,
                 ];
             }
 
@@ -354,7 +487,13 @@ class HookScanner
                 'line' => $hook['line'],
                 'callback' => $hook['callback'],
                 'priority' => $hook['priority'],
+                'documentation' => $hook['documentation'],
             ];
+
+            // Use the first documented occurrence as the canonical documentation
+            if ($hook['documentation'] !== null && $grouped[$hookName]['documentation'] === null) {
+                $grouped[$hookName]['documentation'] = $hook['documentation'];
+            }
         }
 
         // Sort by count descending
